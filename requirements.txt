@@ -8,3 +8,4 @@ pytest
 streamlit
 google-genai
 pillow
+requests
