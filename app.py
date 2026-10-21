@@ -53,7 +53,7 @@ def parse_json(text):
 
 def analyse_rooms():
     s = st.session_state
-    items = [(r, s.get(f"ph_{r}")) for r in ROOMS if s.get(f"rmode_{r}") == "Upload photo" and s.get(f"ph_{r}")]
+    items = [(r, f) for r in ROOMS if s.get(f"rmode_{r}") == "Upload photo" for f in (s.get(f"ph_{r}") or [])][:12]
     key = get_key()
     if not items:
         s.ai = {"error": "Choose 'Upload photo' for a room and upload a photo first."}
@@ -85,9 +85,13 @@ def analyse_rooms():
             if text is None:
                 raise err
             res = parse_json(text)
+            sizes = {r: [] for r in ROOMS}
             for (r, _), room in zip(items, res.get("rooms", [])):
                 if room.get("area_sqm"):
-                    s[f"rsz_{r}"] = max(1.0, min(200.0, float(room["area_sqm"])))
+                    sizes[r].append(max(1.0, min(200.0, float(room["area_sqm"]))))
+            for r in ROOMS:
+                files = s.get(f"ph_{r}") or []
+                s[f"rpx_{r}"], s[f"rsig_{r}"] = sizes[r], [(f.name, f.size) for f in files]
             s.uses += 1
             s.ai = res
         except Exception as e:
@@ -114,6 +118,18 @@ def locate():
         s.loc = {"city": city, "km": d, "name": r[0].get("display_name", "")}
     except Exception as e:
         s.loc = {"error": f"Location lookup failed: {e}"}
+
+def photo_sizes(r):
+    s, files = st.session_state, st.session_state.get(f"ph_{r}") or []
+    ok = files and s.get(f"rsig_{r}") == [(f.name, f.size) for f in files]
+    return s.get(f"rpx_{r}", []) if ok else []
+
+def room_total(r):
+    s, n = st.session_state, st.session_state[f"rn_{r}"]
+    if s[f"rmode_{r}"] == "Upload photo" and photo_sizes(r):
+        v = photo_sizes(r)[:n]
+        return sum(v) + max(0, n - len(v)) * sum(v) / len(v)
+    return n * s[f"rsz_{r}"]
 
 with st.sidebar:
     st.header("Photo analysis key (free)")
@@ -142,7 +158,15 @@ with t1:
             a.number_input(f"{r}s", 1 if r in ("Bedroom", "Bathroom") else 0, 10, key=f"rn_{r}")
             b.radio("Size from", ["Type size", "Upload photo"], key=f"rmode_{r}", horizontal=True)
             if st.session_state[f"rmode_{r}"] == "Upload photo":
-                c.file_uploader(f"{r} photo", type=["jpg", "jpeg", "png"], key=f"ph_{r}", label_visibility="collapsed")
+                files = c.file_uploader(f"{r} photos (one per {r.lower()})", type=["jpg", "jpeg", "png"],
+                                        accept_multiple_files=True, key=f"ph_{r}")
+                v = photo_sizes(r)
+                if files and v:
+                    c.caption(f"Sizes read (sq m): {', '.join(f'{x:.1f}' for x in v)}. Rooms without a photo use the average.")
+                elif files:
+                    c.caption("Click 'Read sizes from photos' below.")
+                if len(files) > st.session_state[f"rn_{r}"]:
+                    c.warning(f"You uploaded {len(files)} photos but the count is {st.session_state[f'rn_{r}']}. Increase the count.")
             else:
                 c.number_input(f"Size of one {r.lower()} (sq m)", 1.0, 200.0, step=0.5, key=f"rsz_{r}")
         st.button("🔍 Read sizes from photos", on_click=analyse_rooms)
@@ -150,12 +174,12 @@ with t1:
         if ai and "error" in ai:
             st.error(ai["error"])
         elif ai:
-            st.success("Photos analysed. Sizes were filled in above. These are rough guesses, so correct them if you know better.")
+            st.success("Photos analysed. The sizes read from the photos are used in the total. They are rough guesses, so type the sizes instead if you know them.")
             if ai.get("rooms"):
                 st.dataframe(pd.DataFrame(ai["rooms"]), hide_index=True)
             if ai.get("notes"):
                 st.info(ai["notes"])
-        sqm = sum(st.session_state[f"rn_{r}"] * st.session_state[f"rsz_{r}"] for r in ROOMS)
+        sqm = sum(room_total(r) for r in ROOMS)
         area_sqft, bed, bath = sqm * SQM, st.session_state["rn_Bedroom"], st.session_state["rn_Bathroom"]
     st.info(f"Area used by the model: **{area_sqft:,.0f} sq ft** ({area_sqft / SQM:,.0f} sq m), {bed} bedrooms, {bath} bathrooms")
 
@@ -187,8 +211,8 @@ with t1:
         inr = "₹" in cur
         f = (lambda v: f"₹{v * rate:,.0f}") if inr else (lambda v: f"${v:,.0f}")
         st.metric("Estimated price", f(usd))
-        st.caption(f"Likely range: {f(usd - rmse)} to {f(usd + rmse)}. Also: ${usd:,.0f} = ₹{usd * rate:,.0f} at ₹{rate:g} per $1. "
-                   "The model's prices are treated as US dollars.")
+        st.caption((f"Likely range: {f(usd - rmse)} to {f(usd + rmse)}. Also: ${usd:,.0f} = ₹{usd * rate:,.0f} at ₹{rate:g} per $1. "
+                    "The model's prices are treated as US dollars.").replace("$", "\\$"))
         d = load_data()
         for col, val in [("area", area_sqft), ("age", age), ("distance_city", dist)]:
             if not d[col].min() <= val <= d[col].max():
