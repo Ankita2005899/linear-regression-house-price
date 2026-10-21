@@ -6,3 +6,5 @@ joblib
 statsmodels
 pytest
 streamlit
+google-genai
+pillow
