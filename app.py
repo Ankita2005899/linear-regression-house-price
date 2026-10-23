@@ -1,15 +1,11 @@
-"""House Price Predictor - multi-tab Streamlit app (run: streamlit run app.py)."""
-import base64, io, json, math, requests
+"""Mumbai House Price Predictor - Streamlit app trained on real listings (run: streamlit run app.py)."""
+import base64, io, json, difflib
 import pandas as pd
 import streamlit as st
 from src import config, predict as predictor
 
-st.set_page_config(page_title="House Price Predictor", page_icon="🏠", layout="wide")
-OUT, CITIES = config.OUT_DIR, ["Mumbai", "Pune", "Nagpur"]
-DEFAULTS = dict(f_area=1800.0, f_bed=3, f_bath=2, f_age=5, f_dist=8.0, f_city="Pune")
-for k, v in DEFAULTS.items():
-    st.session_state.setdefault(k, v)
-st.session_state.setdefault("uses", 0)
+st.set_page_config(page_title="Mumbai House Price Predictor", page_icon="🏠", layout="wide")
+OUT = config.OUT_DIR
 
 @st.cache_data
 def load_data():
@@ -19,16 +15,33 @@ def load_metrics():
     p = OUT / "best_metrics.json"
     return json.loads(p.read_text()) if p.exists() else {}
 
+D = load_data()
+REGIONS = sorted(D["region"].unique())
+TYPES = sorted(D["type"].unique())
+for k, v in dict(f_region="Thane West" if "Thane West" in REGIONS else REGIONS[0], f_type="Apartment",
+                 f_status="Ready to move", f_age="New", uses=0).items():
+    st.session_state.setdefault(k, v)
+
 if not config.MODEL_PATH.exists():
     from src import train
     train.main()
+
+def run_model(row):
+    try:
+        return float(predictor.predict(row)[0])
+    except Exception:            # e.g. library version mismatch: retrain once on this machine
+        from src import train
+        train.main()
+        return float(predictor.predict(row)[0])
+
+def fmt_inr(lakh):
+    return f"₹{lakh / 100:,.2f} crore" if lakh >= 100 else f"₹{lakh:,.1f} lakh"
 
 PROMPT = """Each photo is preceded by a text label giving its room type. Estimate the floor area of each room in square metres.
 Return ONLY a JSON object: {"rooms": [{"room_type": "label", "area_sqm": number or null, "note": "short"}], "notes": "one sentence on what you could not tell"}.
 List the rooms in the same order as the photos. Use null if the size cannot be judged. Never invent values."""
 SQM = 10.7639
-ROOMS = {"Bedroom": (3, 12.0), "Bathroom": (2, 4.0), "Living room": (1, 20.0), "Kitchen": (1, 9.0)}
-CENTRES = {"Mumbai": (18.9388, 72.8354), "Pune": (18.5196, 73.8553), "Nagpur": (21.1458, 79.0882)}
+ROOMS = {"Bedroom": (2, 12.0), "Bathroom": (2, 4.0), "Living room": (1, 20.0), "Kitchen": (1, 9.0)}
 for r, (n, sz) in ROOMS.items():
     st.session_state.setdefault(f"rn_{r}", n)
     st.session_state.setdefault(f"rsz_{r}", sz)
@@ -97,28 +110,6 @@ def analyse_rooms():
         except Exception as e:
             s.ai = {"error": f"Photo analysis failed: {e}"}
 
-def hav(a, b):
-    p1, p2, dl = math.radians(a[0]), math.radians(b[0]), math.radians(b[1] - a[1])
-    x = math.sin((p2 - p1) / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
-    return 6371 * 2 * math.asin(math.sqrt(x))
-
-def locate():
-    s = st.session_state
-    try:
-        r = requests.get("https://nominatim.openstreetmap.org/search", timeout=10,
-                         params={"q": s.get("addr", ""), "format": "json", "limit": 1, "countrycodes": "in"},
-                         headers={"User-Agent": "house-price-student-project"}).json()
-        if not r:
-            s.loc = {"error": "Address not found. Try adding the area, city and pincode."}
-            return
-        pt = (float(r[0]["lat"]), float(r[0]["lon"]))
-        city = min(CENTRES, key=lambda c: hav(pt, CENTRES[c]))
-        d = hav(pt, CENTRES[city])
-        s.f_city, s.f_dist = city, round(min(d, 100.0), 1)
-        s.loc = {"city": city, "km": d, "name": r[0].get("display_name", "")}
-    except Exception as e:
-        s.loc = {"error": f"Location lookup failed: {e}"}
-
 def photo_sizes(r):
     s, files = st.session_state, st.session_state.get(f"ph_{r}") or []
     ok = files and s.get(f"rsig_{r}") == [(f.name, f.size) for f in files]
@@ -131,13 +122,29 @@ def room_total(r):
         return sum(v) + max(0, n - len(v)) * sum(v) / len(v)
     return n * s[f"rsz_{r}"]
 
+
+def find_region():
+    s = st.session_state
+    text = s.get("addr", "").lower()
+    hits = [r for r in REGIONS if r != "Other" and r.lower() in text]
+    if not hits:
+        low = {r.lower(): r for r in REGIONS if r != "Other"}
+        words = [w.strip(",.") for w in text.replace("-", " ").split()]
+        cand = [m for w in [text] + words for m in difflib.get_close_matches(w, low, n=1, cutoff=0.75)]
+        hits = [low[c] for c in cand]
+    if hits:
+        s.f_region = max(hits, key=len)
+        s.reg_msg = {"ok": f"Matched area: {s.f_region}. Change it below if this is wrong."}
+    else:
+        s.reg_msg = {"error": "No matching area in the data. Pick the nearest area from the list below."}
+
 with st.sidebar:
     st.header("Photo analysis key (free)")
     st.caption("Only needed to read room sizes from photos. Kept for this session only.")
     st.text_input("Google Gemini API key", type="password", key="user_key")
 
-st.title("🏠 House Price Predictor")
-st.caption("Linear regression (Ridge) trained on 1,000 sample houses.")
+st.title("🏠 Mumbai House Price Predictor")
+st.caption("Linear regression trained on real property listings from the Mumbai region (asking prices).")
 t1, t2, t3, t4 = st.tabs(["🔮 Predict", "📊 Data Explorer", "📈 Model Performance", "ℹ️ About"])
 
 with t1:
@@ -146,16 +153,16 @@ with t1:
                     horizontal=True, key="size_mode")
     if mode.startswith("Type"):
         u1, u2 = st.columns(2)
-        unit = u1.selectbox("Unit", ["square metres (sq m)", "square feet (sq ft)"], key="unit")
-        total = u2.number_input("Total area", 10.0, 10000.0, 150.0 if "metres" in unit else 1600.0, step=5.0, key="total")
-        area_sqft = total * SQM if "metres" in unit else total
-        bed = st.number_input("Bedrooms", 1, 10, 3, key="bed_t")
-        bath = st.number_input("Bathrooms", 1, 10, 2, key="bath_t")
+        unit = u1.selectbox("Unit", ["square feet (sq ft)", "square metres (sq m)"], key="unit")
+        metric = "metres" in unit
+        total = u2.number_input("Total area", 10.0, 10000.0, 80.0 if metric else 860.0, step=5.0, key="total")
+        area_sqft = total * SQM if metric else total
+        bhk = st.number_input("BHK (number of bedrooms)", 1, 6, 2, key="bhk_t")
     else:
-        st.caption("For each room type give how many there are, then type the size of one room or upload one photo of it.")
+        st.caption("For each room type give how many there are, then type the size of one room or upload photos (one per room).")
         for r in ROOMS:
             a, b, c = st.columns([1, 1.3, 2])
-            a.number_input(f"{r}s", 1 if r in ("Bedroom", "Bathroom") else 0, 10, key=f"rn_{r}")
+            a.number_input(f"{r}s", 1 if r in ("Bedroom", "Bathroom") else 0, 6 if r == "Bedroom" else 10, key=f"rn_{r}")
             b.radio("Size from", ["Type size", "Upload photo"], key=f"rmode_{r}", horizontal=True)
             if st.session_state[f"rmode_{r}"] == "Upload photo":
                 files = c.file_uploader(f"{r} photos (one per {r.lower()})", type=["jpg", "jpeg", "png"],
@@ -174,80 +181,89 @@ with t1:
         if ai and "error" in ai:
             st.error(ai["error"])
         elif ai:
-            st.success("Photos analysed. The sizes read from the photos are used in the total. They are rough guesses, so type the sizes instead if you know them.")
+            st.success("Photos analysed. The sizes read from the photos are used in the total. They are rough guesses, "
+                       "so type the sizes instead if you know them.")
             if ai.get("rooms"):
                 st.dataframe(pd.DataFrame(ai["rooms"]), hide_index=True)
             if ai.get("notes"):
                 st.info(ai["notes"])
-        sqm = sum(room_total(r) for r in ROOMS)
-        area_sqft, bed, bath = sqm * SQM, st.session_state["rn_Bedroom"], st.session_state["rn_Bathroom"]
-    st.info(f"Area used by the model: **{area_sqft:,.0f} sq ft** ({area_sqft / SQM:,.0f} sq m), {bed} bedrooms, {bath} bathrooms")
+        area_sqft = sum(room_total(r) for r in ROOMS) * SQM
+        bhk = st.session_state["rn_Bedroom"]
+    st.info(f"Area used by the model: **{area_sqft:,.0f} sq ft** ({area_sqft / SQM:,.0f} sq m), **{bhk} BHK**")
 
     st.subheader("2. Location")
-    lm = st.radio("How do you want to give the location?", ["Choose city and distance", "Type the address"], horizontal=True)
+    lm = st.radio("How do you want to give the location?", ["Choose the area from the list", "Type the address"], horizontal=True)
     if lm.startswith("Type"):
-        st.text_input("Address (area, city, pincode)", key="addr")
-        st.button("📍 Find location", on_click=locate)
-        loc = st.session_state.get("loc")
-        if loc and "error" in loc:
-            st.error(loc["error"])
-        elif loc:
-            st.success(f"Nearest model city: {loc['city']}, about {loc['km']:.1f} km (straight line) from the centre. {loc['name']}")
-            if loc["km"] > 60:
-                st.warning("This address is far from Mumbai, Pune and Nagpur, so the estimate is not reliable.")
-    l1, l2 = st.columns(2)
-    city = l1.selectbox("City", CITIES, key="f_city")
-    dist = l2.number_input("Distance from city centre (km)", 0.0, 100.0, step=0.5, key="f_dist")
+        st.text_input("Address or area name (for example: Powai, Mumbai)", key="addr")
+        st.button("📍 Find area", on_click=find_region)
+        msg = st.session_state.get("reg_msg")
+        if msg:
+            (st.success if "ok" in msg else st.error)(msg.get("ok") or msg["error"])
+    region = st.selectbox("Area / region (you can type to search)", REGIONS, key="f_region")
 
-    st.subheader("3. Age and currency")
-    g1, g2, g3 = st.columns(3)
-    age = g1.number_input("Age of house (years)", 0, 100, key="f_age")
-    cur = g2.radio("Show price in", ["US dollars ($)", "Indian rupees (₹)"])
-    rate = g3.number_input("Today's rate: ₹ for $1", 1.0, 1000.0, 85.0, step=0.1,
+    st.subheader("3. Property details")
+    p1, p2, p3 = st.columns(3)
+    ptype = p1.selectbox("Property type", TYPES, key="f_type")
+    status = p2.selectbox("Status", ["Ready to move", "Under Construction"], key="f_status")
+    age = p3.selectbox("New or resale", ["New", "Resale", "Unknown"], key="f_age")
+
+    st.subheader("4. Currency")
+    g1, g2 = st.columns(2)
+    cur = g1.radio("Show price in", ["Indian rupees (₹)", "US dollars ($)"])
+    rate = g2.number_input("Today's rate: ₹ for $1", 1.0, 1000.0, 85.0, step=0.1,
                            help="Type the current dollar rate, for example from Google.")
+
     if st.button("Predict price", type="primary"):
-        row = [dict(area=area_sqft, bedrooms=bed, bathrooms=bath, age=age, distance_city=dist, city=city)]
-        usd, rmse = float(predictor.predict(row)[0]), load_metrics().get("RMSE", 0)
-        inr = "₹" in cur
-        f = (lambda v: f"₹{v * rate:,.0f}") if inr else (lambda v: f"${v:,.0f}")
-        st.metric("Estimated price", f(usd))
-        st.caption((f"Likely range: {f(usd - rmse)} to {f(usd + rmse)}. Also: ${usd:,.0f} = ₹{usd * rate:,.0f} at ₹{rate:g} per $1. "
-                    "The model's prices are treated as US dollars.").replace("$", "\\$"))
-        d = load_data()
-        for col, val in [("area", area_sqft), ("age", age), ("distance_city", dist)]:
-            if not d[col].min() <= val <= d[col].max():
-                st.warning(f"{col} = {val:,.0f} is outside the training data "
-                           f"({d[col].min():.0f} to {d[col].max():.0f}), so this estimate is less reliable.")
+        row = [dict(area=area_sqft, bhk=bhk, type=ptype, region=region, status=status, age=age)]
+        lakh, m = run_model(row), load_metrics()
+        usd = lakh * 1e5 / rate
+        show = (lambda v: f"${v * 1e5 / rate:,.0f}") if "$" in cur else fmt_inr
+        st.metric("Estimated price", show(lakh))
+        lo, hi = lakh * m.get("ratio_p10", 0.75), lakh * m.get("ratio_p90", 1.3)
+        st.caption((f"Likely range: {show(lo)} to {show(hi)}. In tests on houses the model had not seen, about 80% of "
+                    f"predictions fell in a range like this. Also: {fmt_inr(lakh)} = ${usd:,.0f} at ₹{rate:g} per $1.").replace("$", "\\$"))
+        sub = D[D["region"] == region]
+        if len(sub) >= 20:
+            ppsf = (sub["price_lakh"] * 1e5 / sub["area"]).median()
+            st.caption(f"Check: this model's price is about ₹{lakh * 1e5 / area_sqft:,.0f} per sq ft. "
+                       f"Listings in {region} have a median of ₹{ppsf:,.0f} per sq ft ({len(sub):,} listings).")
+        if not D["area"].min() <= area_sqft <= D["area"].max():
+            st.warning(f"Area {area_sqft:,.0f} sq ft is outside the training data ({D['area'].min():.0f} to {D['area'].max():.0f}), "
+                       "so this estimate is less reliable.")
+        if region == "Other":
+            st.warning("'Other' groups many small areas, so the estimate is rough.")
 
 with t2:
-    d = load_data()
-    st.write(f"{d.shape[0]} rows, {d.shape[1]} columns")
-    st.dataframe(d.head(50))
+    st.write(f"{D.shape[0]:,} real listings, {D.shape[1]} columns. Price is in lakh rupees (1 crore = 100 lakh).")
+    st.dataframe(D.head(50))
     st.subheader("Summary statistics")
-    st.dataframe(d.describe().T)
-    st.subheader("Missing values")
-    st.bar_chart(d.isna().sum())
-    col = st.selectbox("Plot a numeric column against price", [c for c in config.NUMERIC])
-    st.scatter_chart(d, x=col, y="price", color="city")
+    st.dataframe(D.describe().T)
+    st.subheader("Median price by area (the 15 areas with most listings)")
+    top = D["region"].value_counts().head(15).index
+    st.bar_chart(D[D["region"].isin(top)].groupby("region")["price_lakh"].median().sort_values())
+    st.subheader("Area against price")
+    st.scatter_chart(D.sample(min(3000, len(D)), random_state=1), x="area", y="price_lakh", color="bhk")
 
 with t3:
     m = load_metrics()
     if m:
         a, b, c, e = st.columns(4)
-        a.metric("Best model", m["best_model"].title())
+        a.metric("Best model", m["best_model"].replace("poly2_ridge", "Polynomial + Ridge").title())
         b.metric("R²", f"{m['R2']:.3f}")
-        c.metric("RMSE", f"{m['RMSE']:,.0f}")
-        e.metric("MAE", f"{m['MAE']:,.0f}")
+        c.metric("Typical error (RMSE)", f"{m['RMSE']:,.0f} lakh")
+        e.metric("Average % error", f"{m['MAPE']:.0%}")
+        st.caption(f"Trained on {m.get('n_train', 0):,} listings and tested on {m.get('n_test', 0):,} the model had not seen. "
+                   f"Average absolute error (MAE): {m['MAE']:,.1f} lakh.")
     p = OUT / "model_comparison.csv"
     if p.exists():
         cmp = pd.read_csv(p)
         st.subheader("Model comparison")
         st.dataframe(cmp, hide_index=True)
         st.bar_chart(cmp.set_index("model")["RMSE"])
-    for f, cap in [("ridge_diagnostics.png", "Actual vs predicted, residuals and Q-Q plot"),
-                   ("ridge_coefficients.png", "Which features push the price up or down"),
-                   ("correlation_heatmap.png", "Correlation between features"),
-                   ("distributions.png", "Feature distributions"),
+    for f, cap in [(f"{m.get('best_model', 'ridge')}_diagnostics.png", "Actual vs predicted, residuals and Q-Q plot (log price)"),
+                   ("ridge_coefficients.png", "Which features push the price up or down (Ridge)"),
+                   ("correlation_heatmap.png", "Correlation between numeric columns"),
+                   ("distributions.png", "Distributions"),
                    ("gradient_descent_loss.png", "From-scratch gradient descent loss")]:
         if (OUT / f).exists():
             st.subheader(cap)
@@ -255,12 +271,13 @@ with t3:
 
 with t4:
     st.markdown("""
-**Pipeline:** data → EDA → cleaning → scaling and one-hot encoding → five models compared
-(Linear, Ridge, Lasso, ElasticNet, Polynomial+Ridge) with 5-fold cross-validation → best model saved → this app.
+**Data:** about 76,000 property listings from the Mumbai region (a public dataset of asking prices from a property website).
+Cleaning: repeated listings removed, prices converted to lakh rupees, areas outside 200 to 4,000 sq ft and BHK above 6 removed,
+extreme prices per sq ft removed, and small areas grouped as "Other". About 55,000 listings remain.
 
-**About the photo option:** photos are used only to estimate the size of each room (sq m). Photo sizes are rough guesses, so correct them if you know the real size. Bedroom and bathroom counts, age and distance are typed by you.
-A photo can show bedrooms, bathrooms and condition fairly well, but it **cannot measure area or distance**.
-Area is only reliable if a floor plan shows it printed. Always check the values before predicting.
+**Model:** five linear models compared with 5-fold cross-validation (Linear, Ridge, Lasso, ElasticNet, Polynomial + Ridge).
+Prices are modelled on a log scale, then converted back to rupees.
 
-**Limits:** the training data is synthetic, so prices are illustrative, not real market prices.
+**Limits:** these are asking prices, not final sale prices, and the data has no floor, view, builder or exact address.
+It covers the Mumbai region only. Photo sizes are rough guesses: a photo cannot measure a room.
 """)

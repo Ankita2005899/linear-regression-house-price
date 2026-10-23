@@ -1,4 +1,12 @@
-# Linear Regression Project – House Price Prediction
+# Linear Regression Project – House Price Prediction (real Mumbai listings)
+
+**Data:** about 76,000 real property listings from the Mumbai region (asking prices from a property website, public
+'Mumbai House Prices' dataset). `python -m src.prepare_data` downloads and cleans it into `data/housing.csv`
+(price in lakh rupees; 55,295 listings after cleaning). The target is `price_lakh`, modelled on a log scale.
+
+**Results (test set, 10,360 unseen listings):** best model Polynomial(2) + Ridge, R² about 0.85, average error about 19%.
+Features: area, bhk, type, region, status (ready / under construction), age (new / resale).
+Live app: `streamlit run app.py`.
 
 A complete, end-to-end linear regression project: data → EDA → preprocessing → training →
 model comparison → evaluation → assumption checks → saved model → prediction.
@@ -10,7 +18,7 @@ python run_all.py          # runs everything
 ```
 Individual steps:
 ```bash
-python -m src.generate_data        # makes data/housing.csv (synthetic) – replace with YOUR data
+python -m src.prepare_data         # downloads + cleans the real Mumbai data -> data/housing.csv
 python -m src.eda                  # plots -> outputs/
 python -m src.train                # trains/compares models, saves models/best_model.joblib
 python -m src.statistical_analysis # p-values, VIF, Breusch-Pagan, Durbin-Watson
@@ -24,7 +32,8 @@ linear_regression_project/
 ├── data/housing.csv            dataset (swap in your own)
 ├── src/
 │   ├── config.py               paths, column names, target, split settings
-│   ├── generate_data.py        synthetic data generator
+│   ├── prepare_data.py         download + clean the real listings
+│   ├── generate_data.py        (old) synthetic data generator, no longer used
 │   ├── preprocessing.py        impute, scale, one-hot, polynomial, outlier removal
 │   ├── eda.py                  summary stats, correlation heatmap, histograms
 │   ├── from_scratch.py         NumPy linear regression (Normal Eq. + Gradient Descent)
@@ -82,4 +91,4 @@ linear_regression_project/
 - R² near 1 = good fit; always compare train vs test (a big gap = overfitting).
 - RMSE is in the same unit as the target – easiest to explain.
 - Residuals should look like random noise around 0.
-- VIF > 10 → multicollinearity (e.g. bedrooms vs bathrooms in the sample data).
+- VIF > 10 → multicollinearity (on this data VIF is low, area and bhk are about 3).

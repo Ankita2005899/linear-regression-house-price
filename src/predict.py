@@ -8,5 +8,5 @@ def predict(records):
     return model.predict(pd.DataFrame(records))
 
 if __name__ == "__main__":
-    sample = [{"area": 1800, "bedrooms": 3, "bathrooms": 2, "age": 5, "distance_city": 8, "city": "Pune"}]
-    print(f"Predicted price: {predict(sample)[0]:,.0f}")
+    sample = [{"area": 850, "bhk": 2, "type": "Apartment", "region": "Thane West", "status": "Ready to move", "age": "New"}]
+    print(f"Predicted price: {predict(sample)[0]:,.1f} lakh rupees")

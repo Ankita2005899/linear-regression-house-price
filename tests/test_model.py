@@ -6,3 +6,11 @@ def test_scratch_recovers_coefficients():
     X = rng.normal(size=(200, 2)); y = 3 + 2 * X[:, 0] - 1 * X[:, 1]
     m = LinearRegressionScratch(method="normal").fit(X, y)
     assert abs(m.intercept_ - 3) < 1e-6 and np.allclose(m.coef_, [2, -1], atol=1e-6)
+
+def test_clean_converts_crore_to_lakh():
+    import pandas as pd
+    from src.prepare_data import clean
+    raw = pd.DataFrame(dict(bhk=[2], type=["Apartment"], locality=["x"], area=[1000], price=[1.5], price_unit=["Cr"],
+                            region=["Thane West"], status=["Ready to move"], age=["New"]))
+    out = clean(raw)
+    assert out.loc[0, "price_lakh"] == 150.0
